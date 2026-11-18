@@ -53,6 +53,33 @@ export default function LiveWorldMap({
 }: LiveWorldMapProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
+  const [routeCoords, setRouteCoords] = useState<[number, number][]>([]);
+  useEffect(() => {
+  if (!activeDestination) {
+    setRouteCoords([]);
+    return;
+  }
+
+  fetch(
+    `https://router.project-osrm.org/route/v1/driving/${driverPos.lng},${driverPos.lat};${activeDestination.lng},${activeDestination.lat}?overview=full&geometries=geojson`
+  )
+    .then((res) => res.json())
+    .then((data) => {
+      if (data.routes && data.routes[0]) {
+        const coords = data.routes[0].geometry.coordinates.map(
+          (c: [number, number]) => [c[1], c[0]] as [number, number]
+        );
+        setRouteCoords(coords);
+      }
+    })
+    .catch(() => {
+      // Fallback em linha reta caso falhe
+      setRouteCoords([
+        [driverPos.lat, driverPos.lng],
+        [activeDestination.lat, activeDestination.lng],
+      ]);
+    });
+}, [driverPos, activeDestination]);
 
   const handleSearchAddress = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,11 +174,15 @@ export default function LiveWorldMap({
               <Popup>{activeDestination.label}</Popup>
             </Marker>
             <Polyline
-              positions={[
-                [driverPos.lat, driverPos.lng],
-                [activeDestination.lat, activeDestination.lng],
-              ]}
-              pathOptions={{ color: '#FFB800', weight: 5, dashArray: '10, 10' }}
+                positions={
+                    routeCoords.length > 0
+                        ? routeCoords
+                        : [
+                            [driverPos.lat, driverPos.lng],
+                            [activeDestination.lat, activeDestination.lng],
+                          ]
+                }
+                pathOptions={{ color: '#FFB800', weight: 5 }}
             />
           </>
         )}

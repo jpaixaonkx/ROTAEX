@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldCheck, ArrowRight, UserPlus, LogIn, X, CheckCircle2 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 
 export default function LandingPage() {
   const router = useRouter();
@@ -18,31 +19,58 @@ export default function LandingPage() {
     password: '',
   });
 
-  const handleAuthSubmit = (e: React.FormEvent) => {
+  // Substitua a função handleAuthSubmit por esta:
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (modal === 'register') {
-      // Salva dados locais para demonstração imediata + dispara boas-vindas
-      localStorage.setItem(
-        'rotaex_user',
-        JSON.stringify({
-          fullName: formData.fullName || 'Entregador ROTAEX',
+      const { data, error } = await supabase.auth.signUp({
+        email: formData.email,
+        password: formData.password,
+      });
+
+      if (error) {
+        alert('Erro no cadastro: ' + error.message);
+        return;
+      }
+
+      if (data.user) {
+        await supabase.from('profiles').insert({
+          id: data.user.id,
+          full_name: formData.fullName,
           cpf: formData.cpf,
           phone: formData.phone,
           email: formData.email,
-          carModel: 'Fiat Fiorino Endurance',
-          plateEnd: '9A42',
-          avatar: '',
-        })
-      );
-      setWelcomeToast(true);
-      setTimeout(() => {
-        router.push('/dashboard');
-      }, 2200);
+        });
+
+        // Dispara o e-mail real de boas-vindas
+        await fetch('/api/welcome', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fullName: formData.fullName,
+            email: formData.email,
+          }),
+        });
+
+        setWelcomeToast(true);
+        setTimeout(() => router.push('/dashboard'), 2000);
+      }
     } else {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: formData.email,
+        password: formData.password,
+      });
+
+      if (error) {
+        alert('E-mail ou senha inválidos: ' + error.message);
+        return;
+      }
+
       router.push('/dashboard');
     }
   };
-
+  
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-[#050505] text-white selection:bg-amber-500 selection:text-black">
       {/* FUNDO 4D INTERATIVO (Malha espacial + Partículas Douradas e Cromadas) */}

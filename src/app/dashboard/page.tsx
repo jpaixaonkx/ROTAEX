@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useRouter } from 'next/navigation';
 import {
   QrCode,
   Barcode,
@@ -16,50 +17,86 @@ import {
   Plus,
   Globe,
   Car,
+  LogOut,
 } from 'lucide-react';
 import { PackageItem, sortSmartShelf } from '@/utils/routeOptimizer';
+import { supabase } from '@/lib/supabase';
+import CameraScanner from '@/components/CameraScanner';
 
-// Importação dinâmica do Mapa para evitar erro de SSR no Next.js
 const LiveWorldMap = dynamic(() => import('@/components/LiveWorldMap'), { ssr: false });
 
 export default function RotaexDashboard() {
+  const router = useRouter();
+  const [userId, setUserId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'rastrear' | 'maps' | 'conta' | 'dashboard'>('rastrear');
 
-  // Localização GPS em Tempo Real
   const [driverPos, setDriverPos] = useState({ lat: -23.55052, lng: -46.633308 });
   const [gpsStatus, setGpsStatus] = useState('Sincronizando GPS...');
 
-  // Estante Inteligente de Pacotes
   const [packages, setPackages] = useState<PackageItem[]>([]);
   const [scanMode, setScanMode] = useState<'qrcode' | 'barcode' | 'manual'>('manual');
   const [pkgCode, setPkgCode] = useState('');
   const [pkgAddress, setPkgAddress] = useState('');
   const [showMiniMap, setShowMiniMap] = useState(false);
 
-  // Destino no Modo Maps (Corrida)
   const [activeDestination, setActiveDestination] = useState<{
     lat: number;
     lng: number;
     label: string;
   } | null>(null);
 
-  // Filtro do Dashboard
   const [periodFilter, setPeriodFilter] = useState<'dia' | 'semana' | 'mes'>('dia');
 
-  // Dados da Conta do Entregador
   const [profile, setProfile] = useState({
-    fullName: 'Entregador ROTAEX',
-    email: 'entregador@rotaex.com',
-    carModel: 'Fiat Fiorino Endurance',
-    plateEnd: '9A42',
+    fullName: '',
+    email: '',
+    carModel: '',
+    plateEnd: '',
     avatar: '',
   });
 
-  // Carrega dados salvos e inicia rastreamento GPS em tempo real
+  // 1. Verifica sessão do usuário e carrega perfil + pacotes do Supabase
   useEffect(() => {
-    const saved = localStorage.getItem('rotaex_user');
-    if (saved) setProfile(JSON.parse(saved));
+    async function loadUserData() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.push('/');
+        return;
+      }
+      setUserId(user.id);
 
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (prof) {
+        setProfile({
+          fullName: prof.full_name || '',
+          email: prof.email || user.email || '',
+          carModel: prof.car_model || '',
+          plateEnd: prof.plate_end || '',
+          avatar: prof.avatar_url || '',
+        });
+      }
+
+      const { data: pkgs } = await supabase
+        .from('packages')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (pkgs) {
+        setPackages(sortSmartShelf(pkgs as PackageItem[], driverPos.lat, driverPos.lng));
+      }
+    }
+
+    loadUserData();
+  }, [router]);
+
+  // 2. GPS em Tempo Real reordenando a estante automaticamente
+  useEffect(() => {
     if ('geolocation' in navigator) {
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
@@ -69,7 +106,7 @@ export default function RotaexDashboard() {
           setPackages((prev) => sortSmartShelf(prev, newPos.lat, newPos.lng));
         },
         () => {
-          setGpsStatus('GPS Simulado (Permita localização no navegador)');
+          setGpsStatus('Ative o GPS no dispositivo');
         },
         { enableHighAccuracy: true, maximumAge: 3000 }
       );
@@ -77,14 +114,13 @@ export default function RotaexDashboard() {
     }
   }, []);
 
-  // Adiciona pacote escaneado e reordena automaticamente a estante
+  // 3. Adiciona pacote no Supabase e ordena por distância
   const handleAddPackage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pkgCode || !pkgAddress) return;
+    if (!pkgCode || !pkgAddress || !userId) return;
 
-    // Geocodifica o endereço digitado/escaneado para obter lat/lng reais
-    let lat = driverPos.lat + (Math.random() - 0.5) * 0.03;
-    let lng = driverPos.lng + (Math.random() - 0.5) * 0.03;
+    let lat = driverPos.lat;
+    let lng = driverPos.lng;
 
     try {
       const res = await fetch(
@@ -94,64 +130,116 @@ export default function RotaexDashboard() {
       if (data && data.length > 0) {
         lat = parseFloat(data[0].lat);
         lng = parseFloat(data[0].lon);
+      } else {
+        alert('Endereço não localizado no mapa. Tente incluir cidade ou CEP.');
+        return;
       }
-    } catch {}
+    } catch {
+      alert('Erro ao buscar coordenadas do endereço.');
+      return;
+    }
 
-    const newPkg: PackageItem = {
-      id: crypto.randomUUID(),
-      package_code: pkgCode.toUpperCase(),
-      address: pkgAddress,
-      lat,
-      lng,
-      status: 'pending',
-    };
+    const { data: inserted, error } = await supabase
+      .from('packages')
+      .insert({
+        user_id: userId,
+        package_code: pkgCode.toUpperCase(),
+        address: pkgAddress,
+        lat,
+        lng,
+        status: 'pending',
+      })
+      .select()
+      .single();
 
-    const updated = sortSmartShelf([...packages, newPkg], driverPos.lat, driverPos.lng);
-    setPackages(updated);
-    setPkgCode('');
-    setPkgAddress('');
+    if (!error && inserted) {
+      const updated = sortSmartShelf([...packages, inserted as PackageItem], driverPos.lat, driverPos.lng);
+      setPackages(updated);
+      setPkgCode('');
+      setPkgAddress('');
+    }
   };
 
-  // Marca entrega como concluída
-  const handleDeliverPackage = (id: string) => {
-    setPackages((prev) =>
-      prev.map((p) =>
-        p.id === id ? { ...p, status: 'delivered', delivered_at: new Date().toISOString() } : p
-      )
-    );
+  // 4. Marca entrega como concluída no Supabase
+  const handleDeliverPackage = async (id: string) => {
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('packages')
+      .update({ status: 'delivered', delivered_at: now })
+      .eq('id', id);
+
+    if (!error) {
+      setPackages((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, status: 'delivered', delivered_at: now } : p))
+      );
+    }
   };
 
-  // Upload de Foto de Perfil
+  // 5. Atualiza perfil e foto no Supabase
+  const handleSaveProfile = async () => {
+    if (!userId) return;
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        full_name: profile.fullName,
+        car_model: profile.carModel,
+        plate_end: profile.plateEnd,
+        avatar_url: profile.avatar,
+      })
+      .eq('id', userId);
+
+    if (!error) alert('Perfil atualizado com sucesso!');
+  };
+
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const updated = { ...profile, avatar: reader.result as string };
-      setProfile(updated);
-      localStorage.setItem('rotaex_user', JSON.stringify(updated));
+      setProfile({ ...profile, avatar: reader.result as string });
     };
     reader.readAsDataURL(file);
   };
 
+  // 6. Cálculos reais de métricas do Dashboard (Dia / Semana / Mês)
   const pendingShelf = packages.filter((p) => p.status === 'pending');
   const deliveredList = packages.filter((p) => p.status === 'delivered');
 
+  const filteredDeliveredCount = deliveredList.filter((pkg) => {
+    if (!pkg.delivered_at) return false;
+    const deliveredDate = new Date(pkg.delivered_at);
+    const now = new Date();
+    const diffDays = (now.getTime() - deliveredDate.getTime()) / (1000 * 3600 * 24);
+    if (periodFilter === 'dia') return deliveredDate.toDateString() === now.toDateString();
+    if (periodFilter === 'semana') return diffDays <= 7;
+    return diffDays <= 30;
+  }).length;
+
   return (
     <div className="min-h-screen bg-[#050505] pb-28 text-white">
-      {/* TOPBAR FIXA COM LOGO NO CANTO ESQUERDO SUPERIOR EM TODAS AS PÁGINAS */}
+      {/* TOPBAR FIXA COM LOGO NO CANTO ESQUERDO SUPERIOR */}
       <header className="sticky top-0 z-30 flex items-center justify-between border-b border-white/10 bg-[#050505]/90 px-5 py-3.5 backdrop-blur-xl">
-        <div className="flex items-center gap-3">
-          <img
-            src="/logo-rotaex.png"
-            alt="ROTAEX"
-            className="h-9 w-auto object-contain drop-shadow-[0_0_10px_rgba(255,184,0,0.4)]"
-          />
-        </div>
+        <img
+          src="/logo-rotaex.png"
+          alt="ROTAEX"
+          className="h-9 w-auto object-contain drop-shadow-[0_0_10px_rgba(255,184,0,0.4)]"
+        />
 
-        <div className="flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-400">
-          <span className="h-2 w-2 animate-ping rounded-full bg-amber-400" />
-          {gpsStatus}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs font-medium text-amber-400">
+            <span className="h-2 w-2 animate-ping rounded-full bg-amber-400" />
+            {gpsStatus}
+          </div>
+          <button
+            onClick={async () => {
+              await supabase.auth.signOut();
+              router.push('/');
+            }}
+            title="Sair"
+            className="rounded-full bg-white/5 p-2 text-slate-400 hover:text-red-400"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
         </div>
       </header>
 
@@ -159,7 +247,6 @@ export default function RotaexDashboard() {
         {/* ================= ABA 1: RASTREAR & ESTANTE INTELIGENTE ================= */}
         {activeTab === 'rastrear' && (
           <div className="space-y-6">
-            {/* Opções de Rastreio */}
             <div className="rounded-3xl border border-white/10 bg-zinc-950 p-5 shadow-xl">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-lg font-bold text-white">Escanear Pacote para Estante</h2>
@@ -172,14 +259,12 @@ export default function RotaexDashboard() {
                 </button>
               </div>
 
-              {/* Janela Flutuante do Mapa Mundial em Tempo Real */}
               {showMiniMap && (
                 <div className="mb-5 h-72 w-full">
                   <LiveWorldMap driverPos={driverPos} packages={pendingShelf} compact />
                 </div>
               )}
 
-              {/* Seletor de Modo: QRCode, Código de Barras, Endereço Escrito */}
               <div className="mb-4 grid grid-cols-3 gap-2">
                 <button
                   type="button"
@@ -219,22 +304,15 @@ export default function RotaexDashboard() {
                 </button>
               </div>
 
+              {/* CÂMERA REAL PARA LEITURA DE QR CODE E CÓDIGO DE BARRAS */}
               {scanMode !== 'manual' && (
-                <div className="mb-4 flex flex-col items-center justify-center rounded-2xl border border-dashed border-amber-500/40 bg-black/60 p-6 text-center">
-                  <Camera className="mb-2 h-8 w-8 text-amber-400" />
-                  <p className="text-xs text-slate-300">
-                    Câmera pronta para leitura de {scanMode === 'qrcode' ? 'QR Code' : 'Código de Barras'}.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPkgCode(`RTX-${Math.floor(100000 + Math.random() * 900000)}`);
-                      setPkgAddress('Av. Paulista, 1578, São Paulo');
+                <div className="mb-4">
+                  <CameraScanner
+                    onScanSuccess={(code) => {
+                      setPkgCode(code);
+                      setScanMode('manual');
                     }}
-                    className="mt-3 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-amber-400 hover:bg-white/20"
-                  >
-                    Simular Leitura Instantânea
-                  </button>
+                  />
                 </div>
               )}
 
@@ -265,7 +343,6 @@ export default function RotaexDashboard() {
               </form>
             </div>
 
-            {/* ESTANTE ORDENADA AUTOMATICAMENTE POR DISTÂNCIA */}
             <div>
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-base font-bold text-slate-200">
@@ -380,10 +457,10 @@ export default function RotaexDashboard() {
               <div>
                 <label className="text-xs font-semibold uppercase text-slate-400">E-mail Cadastrado</label>
                 <input
+                  disabled
                   type="email"
                   value={profile.email}
-                  onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white"
+                  className="mt-1 w-full rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 text-sm text-slate-400"
                 />
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -412,19 +489,16 @@ export default function RotaexDashboard() {
               </div>
 
               <button
-                onClick={() => {
-                  localStorage.setItem('rotaex_user', JSON.stringify(profile));
-                  alert('Dados da conta atualizados com sucesso!');
-                }}
+                onClick={handleSaveProfile}
                 className="w-full rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 py-3.5 text-sm font-extrabold text-black"
               >
-                Salvar Alterações
+                Salvar Alterações na Nuvem
               </button>
             </div>
           </div>
         )}
 
-        {/* ================= ABA 4: DASHBOARD DE ENTREGAS ================= */}
+        {/* ================= ABA 4: DASHBOARD REAL DE ENTREGAS ================= */}
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
@@ -451,30 +525,22 @@ export default function RotaexDashboard() {
                 <span className="text-xs font-semibold uppercase text-slate-400">
                   Entregas Concluídas ({periodFilter})
                 </span>
-                <p className="mt-2 text-4xl font-black text-amber-400">
-                  {periodFilter === 'dia'
-                    ? 18 + deliveredList.length
-                    : periodFilter === 'semana'
-                    ? 114 + deliveredList.length
-                    : 482 + deliveredList.length}
-                </p>
+                <p className="mt-2 text-4xl font-black text-amber-400">{filteredDeliveredCount}</p>
               </div>
               <div className="rounded-3xl border border-white/10 bg-zinc-950 p-6">
                 <span className="text-xs font-semibold uppercase text-slate-400">Na Estante Agora</span>
                 <p className="mt-2 text-4xl font-black text-white">{pendingShelf.length}</p>
               </div>
               <div className="rounded-3xl border border-emerald-500/30 bg-zinc-950 p-6">
-                <span className="text-xs font-semibold uppercase text-slate-400">Economia Estimada</span>
-                <p className="mt-2 text-4xl font-black text-emerald-400">
-                  {periodFilter === 'dia' ? '24%' : periodFilter === 'semana' ? '27%' : '31%'}
-                </p>
+                <span className="text-xs font-semibold uppercase text-slate-400">Total Histórico</span>
+                <p className="mt-2 text-4xl font-black text-emerald-400">{deliveredList.length}</p>
               </div>
             </div>
           </div>
         )}
       </main>
 
-      {/* MENU INFERIOR FLUTUANTE DE ÚLTIMA GERAÇÃO */}
+      {/* MENU INFERIOR FLUTUANTE */}
       <nav className="fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-500/30 bg-zinc-950/90 px-4 py-2.5 shadow-[0_10px_40px_rgba(0,0,0,0.9)] backdrop-blur-2xl">
         {[
           { id: 'rastrear', label: 'Rastrear', icon: Package },
