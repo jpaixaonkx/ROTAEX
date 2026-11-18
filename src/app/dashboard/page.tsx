@@ -56,6 +56,7 @@ export default function RotaexDashboard() {
   });
 
   // 1. Verifica sessão do usuário e carrega perfil + pacotes do Supabase
+  // 1. Verifica sessão do usuário e carrega perfil + pacotes do Supabase
   useEffect(() => {
     async function loadUserData() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -69,15 +70,24 @@ export default function RotaexDashboard() {
         .from('profiles')
         .select('*')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
 
       if (prof) {
         setProfile({
-          fullName: prof.full_name || '',
+          fullName: prof.full_name || user.user_metadata?.full_name || '',
           email: prof.email || user.email || '',
           carModel: prof.car_model || '',
           plateEnd: prof.plate_end || '',
           avatar: prof.avatar_url || '',
+        });
+      } else {
+        // Caso o perfil ainda não exista na tabela profiles, puxa da autenticação
+        setProfile({
+          fullName: user.user_metadata?.full_name || 'Entregador ROTAEX',
+          email: user.email || '',
+          carModel: '',
+          plateEnd: '',
+          avatar: '',
         });
       }
 
@@ -123,19 +133,18 @@ export default function RotaexDashboard() {
     let lng = driverPos.lng;
 
     try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(pkgAddress)}`
-      );
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(pkgAddress)}`);
       const data = await res.json();
-      if (data && data.length > 0) {
-        lat = parseFloat(data[0].lat);
-        lng = parseFloat(data[0].lon);
+
+      if (res.ok && data.lat && data.lng) {
+        lat = data.lat;
+        lng = data.lng;
       } else {
-        alert('Endereço não localizado no mapa. Tente incluir cidade ou CEP.');
+        alert('Endereço não localizado no mapa. Tente informar Rua, Número e Cidade ou apenas o CEP.');
         return;
       }
     } catch {
-      alert('Erro ao buscar coordenadas do endereço.');
+      alert('Erro ao conectar com o serviço de mapas.');
       return;
     }
 
@@ -152,9 +161,14 @@ export default function RotaexDashboard() {
       .select()
       .single();
 
-    if (!error && inserted) {
-      const updated = sortSmartShelf([...packages, inserted as PackageItem], driverPos.lat, driverPos.lng);
-      setPackages(updated);
+    if (error) {
+      console.error('Erro Supabase ao salvar pacote:', error);
+      alert('Erro ao salvar na estante: ' + error.message);
+      return;
+    }
+
+    if (inserted) {
+      setPackages((prev) => sortSmartShelf([inserted as PackageItem, ...prev], driverPos.lat, driverPos.lng));
       setPkgCode('');
       setPkgAddress('');
     }
@@ -176,19 +190,27 @@ export default function RotaexDashboard() {
   };
 
   // 5. Atualiza perfil e foto no Supabase
+  // 5. Atualiza ou cria perfil e foto no Supabase
   const handleSaveProfile = async () => {
     if (!userId) return;
     const { error } = await supabase
       .from('profiles')
-      .update({
+      .upsert({
+        id: userId,
         full_name: profile.fullName,
+        email: profile.email,
+        cpf: '000.000.000-00',
+        phone: '(00) 00000-0000',
         car_model: profile.carModel,
         plate_end: profile.plateEnd,
         avatar_url: profile.avatar,
-      })
-      .eq('id', userId);
+      });
 
-    if (!error) alert('Perfil atualizado com sucesso!');
+    if (error) {
+      alert('Erro ao salvar perfil: ' + error.message);
+    } else {
+      alert('Dados da conta salvos com sucesso!');
+    }
   };
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {

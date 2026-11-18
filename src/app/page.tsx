@@ -19,13 +19,17 @@ export default function LandingPage() {
     password: '',
   });
 
-  // Substitua a função handleAuthSubmit por esta:
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (formData.password.length < 6) {
+      alert('A senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
+
     if (modal === 'register') {
       const { data, error } = await supabase.auth.signUp({
-        email: formData.email,
+        email: formData.email.trim(),
         password: formData.password,
       });
 
@@ -40,7 +44,7 @@ export default function LandingPage() {
           full_name: formData.fullName,
           cpf: formData.cpf,
           phone: formData.phone,
-          email: formData.email,
+          email: formData.email.trim(),
         });
 
         // Dispara o e-mail real de boas-vindas
@@ -49,7 +53,7 @@ export default function LandingPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             fullName: formData.fullName,
-            email: formData.email,
+            email: formData.email.trim(),
           }),
         });
 
@@ -58,19 +62,25 @@ export default function LandingPage() {
       }
     } else {
       const { error } = await supabase.auth.signInWithPassword({
-        email: formData.email,
+        email: formData.email.trim(),
         password: formData.password,
       });
 
       if (error) {
-        alert('E-mail ou senha inválidos: ' + error.message);
+        if (error.message.includes('Invalid login credentials')) {
+          alert('E-mail ou senha incorretos. Se ainda não tem conta, clique em "Cadastro" primeiro.');
+        } else if (error.message.includes('Email not confirmed')) {
+          alert('E-mail ainda não confirmado. Desative "Confirm email" no painel do Supabase.');
+        } else {
+          alert('Erro ao acessar: ' + error.message);
+        }
         return;
       }
 
       router.push('/dashboard');
     }
   };
-  
+
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-[#050505] text-white selection:bg-amber-500 selection:text-black">
       {/* FUNDO 4D INTERATIVO (Malha espacial + Partículas Douradas e Cromadas) */}

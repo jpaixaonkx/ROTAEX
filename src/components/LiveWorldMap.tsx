@@ -86,16 +86,16 @@ export default function LiveWorldMap({
     if (!searchQuery.trim()) return;
     setSearching(true);
     try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}`
-      );
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(searchQuery)}`);
       const data = await res.json();
-      if (data && data.length > 0 && onSelectDestination) {
+      if (res.ok && data.lat && data.lng && onSelectDestination) {
         onSelectDestination({
-          lat: parseFloat(data[0].lat),
-          lng: parseFloat(data[0].lon),
-          label: data[0].display_name,
+          lat: data.lat,
+          lng: data.lng,
+          label: data.label || searchQuery,
         });
+      } else {
+        alert('Local não encontrado. Tente incluir a cidade ou CEP.');
       }
     } catch (err) {
       console.error('Erro na geocodificação:', err);
@@ -136,8 +136,8 @@ export default function LiveWorldMap({
         zoomControl={false}
       >
         <TileLayer
-          attribution="&copy; OpenStreetMap"
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
         <MapRecenter lat={driverPos.lat} lng={driverPos.lng} />
